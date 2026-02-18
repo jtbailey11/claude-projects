@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Sorter</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        /* Header */
+        .header {
+            background: #1a1a2e;
+            color: white;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 { font-size: 20px; font-weight: 600; }
+        .header .stats {
+            display: flex;
+            gap: 20px;
+            font-size: 14px;
+            color: #aaa;
+        }
+        .header .stats span { color: #6ec1e4; font-weight: 600; }
+
+        /* Layout */
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 320px;
+            gap: 0;
+            height: calc(100vh - 56px);
+        }
+
+        /* Main area */
+        .main { overflow-y: auto; padding: 20px; }
+
+        /* Toolbar */
+        .toolbar {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .toolbar select, .toolbar input, .toolbar button {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .btn {
+            background: #2563eb;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #1d4ed8; }
+        .btn:disabled { background: #93c5fd; cursor: not-allowed; }
+        .btn-secondary { background: #6b7280; }
+        .btn-secondary:hover { background: #4b5563; }
+        .btn-success { background: #16a34a; }
+        .btn-success:hover { background: #15803d; }
+
+        /* File grid */
+        .file-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 16px;
+        }
+        .file-card {
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s;
+            position: relative;
+        }
+        .file-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .file-card.selected {
+            outline: 3px solid #2563eb;
+        }
+        .file-card .thumb {
+            width: 100%;
+            height: 200px;
+            object-fit: cover;
+            background: #eee;
+            display: block;
+        }
+        .file-card .info {
+            padding: 10px;
+        }
+        .file-card .info .name {
+            font-size: 12px;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .file-card .badge {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .file-card .badge.sorted { background: #16a34a; }
+        .file-card .badge.unidentified { background: #eab308; color: #333; }
+        .file-card .badge.error { background: #dc2626; }
+
+        /* Sidebar */
+        .sidebar {
+            background: white;
+            border-left: 1px solid #e5e5e5;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        .sidebar h2 { font-size: 16px; margin-bottom: 16px; }
+        .sidebar h3 {
+            font-size: 13px;
+            text-transform: uppercase;
+            color: #888;
+            margin: 16px 0 8px;
+            letter-spacing: 0.5px;
+        }
+
+        /* Classification result */
+        .classification {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 14px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .classification .label { color: #888; font-size: 11px; }
+        .classification .value { font-weight: 500; margin-bottom: 8px; }
+        .confidence-bar {
+            height: 6px;
+            background: #e5e5e5;
+            border-radius: 3px;
+            overflow: hidden;
+            margin: 4px 0 8px;
+        }
+        .confidence-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s;
+        }
+
+        /* Category list in sidebar */
+        .category-list {
+            list-style: none;
+            font-size: 13px;
+        }
+        .category-list li {
+            padding: 6px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .category-list li:hover { background: #f0f0f0; }
+
+        /* Progress overlay */
+        .progress-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+        }
+        .progress-overlay.active { display: flex; }
+        .progress-box {
+            background: white;
+            border-radius: 12px;
+            padding: 32px;
+            width: 480px;
+            max-width: 90vw;
+            text-align: center;
+        }
+        .progress-box h2 { margin-bottom: 16px; }
+        .progress-bar-outer {
+            height: 10px;
+            background: #e5e5e5;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 16px 0;
+        }
+        .progress-bar-inner {
+            height: 100%;
+            background: #2563eb;
+            border-radius: 5px;
+            transition: width 0.3s;
+            width: 0%;
+        }
+        .progress-file {
+            font-size: 13px;
+            color: #666;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Results panel */
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin-top: 12px;
+        }
+        .results-table th {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 2px solid #e5e5e5;
+            color: #888;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .results-table td {
+            padding: 8px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        /* Settings panel */
+        .settings-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0;
+            font-size: 14px;
+        }
+        .settings-row input, .settings-row select {
+            padding: 6px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 140px;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 0;
+            border-bottom: 2px solid #e5e5e5;
+            margin-bottom: 16px;
+        }
+        .tab {
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: #888;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: color 0.15s;
+        }
+        .tab:hover { color: #333; }
+        .tab.active { color: #2563eb; border-bottom-color: #2563eb; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* Empty state */
+        .empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+        .empty .icon { font-size: 48px; margin-bottom: 12px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Document Sorter</h1>
+        <div class="stats">
+            Inbox: <span id="fileCount">{{ file_count }}</span> files
+            &nbsp;&middot;&nbsp;
+            Categories: <span id="catCount">{{ categories|length }}</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="main">
+            <!-- Toolbar -->
+            <div class="toolbar">
+                <button class="btn" onclick="startSort()" id="sortBtn">Sort All Documents</button>
+                <button class="btn btn-secondary" onclick="classifySelected()" id="classifyBtn" disabled>
+                    Preview Classification
+                </button>
+                <div style="flex:1"></div>
+                <label style="font-size:13px;">
+                    Threshold:
+                    <input type="range" min="0" max="100" value="{{ (config.confidence_threshold * 100)|int }}"
+                           id="thresholdSlider" style="width:100px;vertical-align:middle;"
+                           oninput="document.getElementById('thresholdVal').textContent=this.value+'%'">
+                    <span id="thresholdVal">{{ (config.confidence_threshold * 100)|int }}%</span>
+                </label>
+                <select id="generalitySelect">
+                    <option value="broad" {{ 'selected' if config.generality.value == 'broad' }}>Broad</option>
+                    <option value="moderate" {{ 'selected' if config.generality.value == 'moderate' }}>Moderate</option>
+                    <option value="specific" {{ 'selected' if config.generality.value == 'specific' }}>Specific</option>
+                </select>
+            </div>
+
+            <!-- Tabs -->
+            <div class="tabs">
+                <div class="tab active" data-tab="inbox">Inbox</div>
+                <div class="tab" data-tab="results">Results</div>
+            </div>
+
+            <!-- Inbox tab -->
+            <div class="tab-content active" id="tab-inbox">
+                {% if files %}
+                <div class="file-grid" id="fileGrid">
+                    {% for name in files %}
+                    <div class="file-card" data-filename="{{ name }}" onclick="selectFile(this, '{{ name }}')">
+                        <img class="thumb" src="/thumbnail/{{ name }}" alt="{{ name }}"
+                             onerror="this.style.background='#ddd'">
+                        <div class="info">
+                            <div class="name" title="{{ name }}">{{ name }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="empty">
+                    <div class="icon">&#128196;</div>
+                    <p>No documents in inbox.</p>
+                    <p style="font-size:13px;margin-top:8px;">
+                        Add scanned documents to <code>{{ config.inbox_dir }}</code>
+                    </p>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Results tab -->
+            <div class="tab-content" id="tab-results">
+                <div id="resultsArea">
+                    <div class="empty">
+                        <div class="icon">&#9745;</div>
+                        <p>No results yet. Run a sort to see results here.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <h2>Document Details</h2>
+
+            <div id="noSelection" style="color:#888;font-size:13px;">
+                Click a document to see details, or click "Preview Classification" after selecting one.
+            </div>
+
+            <div id="detailPanel" style="display:none;">
+                <div style="text-align:center;margin-bottom:12px;">
+                    <img id="detailThumb" style="max-width:100%;max-height:250px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+                </div>
+                <div style="font-weight:600;font-size:14px;margin-bottom:12px;" id="detailName"></div>
+
+                <div id="classificationResult" style="display:none;">
+                    <div class="classification">
+                        <div class="label">Category</div>
+                        <div class="value" id="clsCategory"></div>
+                        <div class="label">Confidence</div>
+                        <div class="confidence-bar">
+                            <div class="confidence-fill" id="clsConfBar"></div>
+                        </div>
+                        <div class="value" id="clsConfidence"></div>
+                        <div class="label">Summary</div>
+                        <div class="value" id="clsSummary"></div>
+                        <div class="label">Date Detected</div>
+                        <div class="value" id="clsDate"></div>
+                        <div class="label">Reasoning</div>
+                        <div class="value" id="clsReasoning" style="font-weight:normal;font-size:12px;color:#666;"></div>
+                    </div>
+
+                    <button class="btn btn-success" style="width:100%;margin-bottom:8px;"
+                            onclick="acceptClassification()">
+                        Accept &amp; Move
+                    </button>
+                </div>
+
+                <h3>Manual Assignment</h3>
+                <select id="manualCategory" style="width:100%;padding:8px;margin-bottom:8px;">
+                    {% for cat in categories %}
+                    <option value="{{ cat }}">{{ cat }}</option>
+                    {% endfor %}
+                </select>
+                <button class="btn btn-secondary" style="width:100%;" onclick="manualMove()">
+                    Move to Category
+                </button>
+            </div>
+
+            <h3>Categories</h3>
+            <ul class="category-list" id="categoryList">
+                {% for cat in categories %}
+                <li>{{ cat }}</li>
+                {% endfor %}
+            </ul>
+            <div style="margin-top:12px;">
+                <input type="text" id="newCatInput" placeholder="New category name..."
+                       style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;margin-bottom:6px;">
+                <button class="btn btn-secondary" style="width:100%;font-size:13px;" onclick="createCategory()">
+                    + Create Category
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress overlay -->
+    <div class="progress-overlay" id="progressOverlay">
+        <div class="progress-box">
+            <h2>Sorting Documents...</h2>
+            <div class="progress-bar-outer">
+                <div class="progress-bar-inner" id="progressBar"></div>
+            </div>
+            <div style="font-size:14px;margin-bottom:4px;">
+                <span id="progressCount">0</span> / <span id="progressTotal">0</span>
+            </div>
+            <div class="progress-file" id="progressFile"></div>
+        </div>
+    </div>
+
+    <script>
+        let selectedFile = null;
+        let lastClassification = null;
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        function selectFile(card, filename) {
+            document.querySelectorAll('.file-card').forEach(c => c.classList.remove('selected'));
+            card.classList.add('selected');
+            selectedFile = filename;
+
+            document.getElementById('noSelection').style.display = 'none';
+            document.getElementById('detailPanel').style.display = 'block';
+            document.getElementById('detailThumb').src = '/thumbnail/' + filename;
+            document.getElementById('detailName').textContent = filename;
+            document.getElementById('classificationResult').style.display = 'none';
+            document.getElementById('classifyBtn').disabled = false;
+            lastClassification = null;
+        }
+
+        async function classifySelected() {
+            if (!selectedFile) return;
+            const btn = document.getElementById('classifyBtn');
+            btn.disabled = true;
+            btn.textContent = 'Classifying...';
+
+            try {
+                const res = await fetch('/api/classify/' + encodeURIComponent(selectedFile), { method: 'POST' });
+                const data = await res.json();
+                lastClassification = data;
+
+                document.getElementById('clsCategory').textContent = data.category;
+                const pct = Math.round(data.confidence * 100);
+                document.getElementById('clsConfidence').textContent = pct + '%';
+                const bar = document.getElementById('clsConfBar');
+                bar.style.width = pct + '%';
+                bar.style.background = pct >= 70 ? '#16a34a' : pct >= 50 ? '#eab308' : '#dc2626';
+                document.getElementById('clsSummary').textContent = data.summary || '—';
+                document.getElementById('clsDate').textContent = data.date_detected || 'None found';
+                document.getElementById('clsReasoning').textContent = data.reasoning || '';
+                document.getElementById('classificationResult').style.display = 'block';
+            } catch(e) {
+                alert('Classification failed: ' + e.message);
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Preview Classification';
+        }
+
+        async function acceptClassification() {
+            if (!selectedFile || !lastClassification) return;
+            await moveFile(selectedFile, lastClassification.category);
+        }
+
+        async function manualMove() {
+            if (!selectedFile) return;
+            const cat = document.getElementById('manualCategory').value;
+            if (!cat) return;
+            await moveFile(selectedFile, cat);
+        }
+
+        async function moveFile(filename, category) {
+            const res = await fetch('/api/move', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename, category }),
+            });
+            const data = await res.json();
+            if (data.moved) {
+                // Remove card from grid
+                const card = document.querySelector(`.file-card[data-filename="${filename}"]`);
+                if (card) card.remove();
+
+                selectedFile = null;
+                document.getElementById('detailPanel').style.display = 'none';
+                document.getElementById('noSelection').style.display = 'block';
+                updateFileCount();
+            }
+        }
+
+        async function startSort() {
+            const threshold = document.getElementById('thresholdSlider').value / 100;
+            const generality = document.getElementById('generalitySelect').value;
+
+            const res = await fetch('/api/sort', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ threshold, generality }),
+            });
+            const data = await res.json();
+            if (data.error) {
+                alert(data.error);
+                return;
+            }
+
+            document.getElementById('progressOverlay').classList.add('active');
+            pollProgress();
+        }
+
+        async function pollProgress() {
+            const res = await fetch('/api/sort/status');
+            const job = await res.json();
+
+            document.getElementById('progressTotal').textContent = job.total;
+            document.getElementById('progressCount').textContent = job.progress;
+            document.getElementById('progressFile').textContent = job.current_file;
+
+            const pct = job.total > 0 ? (job.progress / job.total * 100) : 0;
+            document.getElementById('progressBar').style.width = pct + '%';
+
+            if (job.done) {
+                document.getElementById('progressOverlay').classList.remove('active');
+                showResults(job);
+                refreshFiles();
+                return;
+            }
+
+            setTimeout(pollProgress, 1000);
+        }
+
+        function showResults(job) {
+            // Switch to results tab
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector('.tab[data-tab="results"]').classList.add('active');
+            document.getElementById('tab-results').classList.add('active');
+
+            let html = '<h3 style="margin-bottom:12px;">Sorted ' + job.results.length + ' documents</h3>';
+
+            if (job.errors.length > 0) {
+                html += '<div style="color:#dc2626;margin-bottom:12px;">' + job.errors.length + ' error(s)</div>';
+            }
+
+            html += '<table class="results-table"><thead><tr>';
+            html += '<th>File</th><th>Category</th><th>Confidence</th><th>Summary</th>';
+            html += '</tr></thead><tbody>';
+
+            for (const r of job.results) {
+                const pct = Math.round(r.confidence * 100);
+                const color = pct >= 70 ? '#16a34a' : pct >= 50 ? '#eab308' : '#dc2626';
+                const tag = r.unidentified ? ' <span style="color:#eab308;">[Unidentified]</span>' : '';
+                html += '<tr>';
+                html += '<td>' + r.filename + '</td>';
+                html += '<td>' + r.category + tag + '</td>';
+                html += '<td style="color:' + color + ';font-weight:600;">' + pct + '%</td>';
+                html += '<td style="font-size:12px;color:#666;">' + (r.summary || '') + '</td>';
+                html += '</tr>';
+            }
+
+            html += '</tbody></table>';
+            document.getElementById('resultsArea').innerHTML = html;
+        }
+
+        async function refreshFiles() {
+            const res = await fetch('/api/files');
+            const files = await res.json();
+            const grid = document.getElementById('fileGrid');
+
+            if (grid) {
+                grid.innerHTML = '';
+                for (const f of files) {
+                    const card = document.createElement('div');
+                    card.className = 'file-card';
+                    card.dataset.filename = f.name;
+                    card.onclick = function() { selectFile(this, f.name); };
+                    card.innerHTML = '<img class="thumb" src="/thumbnail/' + f.name + '" onerror="this.style.background=\'#ddd\'">'
+                        + '<div class="info"><div class="name" title="' + f.name + '">' + f.name + '</div></div>';
+                    grid.appendChild(card);
+                }
+            }
+            updateFileCount();
+        }
+
+        function updateFileCount() {
+            const cards = document.querySelectorAll('.file-card');
+            document.getElementById('fileCount').textContent = cards.length;
+        }
+
+        async function createCategory() {
+            const input = document.getElementById('newCatInput');
+            const name = input.value.trim();
+            if (!name) return;
+
+            await fetch('/api/categories', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+            });
+
+            // Refresh category list
+            const res = await fetch('/api/categories');
+            const cats = await res.json();
+
+            const list = document.getElementById('categoryList');
+            list.innerHTML = cats.map(c => '<li>' + c + '</li>').join('');
+
+            const sel = document.getElementById('manualCategory');
+            sel.innerHTML = cats.map(c => '<option value="' + c + '">' + c + '</option>').join('');
+
+            document.getElementById('catCount').textContent = cats.length;
+            input.value = '';
+        }
+    </script>
+</body>
+</html>

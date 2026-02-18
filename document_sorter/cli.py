@@ -112,6 +112,25 @@ def _build_parser() -> argparse.ArgumentParser:
         default="token.json",
         help="Path to saved Google OAuth token (default: token.json)",
     )
+
+    # GUI options
+    gui_group = p.add_argument_group("Web GUI")
+    gui_group.add_argument(
+        "--gui",
+        action="store_true",
+        help="Launch the web GUI instead of sorting from the command line",
+    )
+    gui_group.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port for the web GUI (default: 5000)",
+    )
+    gui_group.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host for the web GUI (default: 127.0.0.1)",
+    )
     return p
 
 
@@ -262,6 +281,31 @@ def _run_drive(args: argparse.Namespace, config: SorterConfig) -> int:
     return 0 if not report.errors else 1
 
 
+def _run_gui(args: argparse.Namespace, config: SorterConfig) -> int:
+    """Launch the web GUI."""
+    try:
+        from .web import run_server
+    except ImportError:
+        console.print(
+            "[red]Flask is required for the web GUI.[/red]\n"
+            "Install it with: pip install -e '.[gui]'"
+        )
+        return 1
+
+    # Ensure inbox exists for the GUI
+    config.inbox_dir.mkdir(parents=True, exist_ok=True)
+
+    console.print(Panel(
+        f"[bold]Document Sorter — Web GUI[/bold]\n"
+        f"Inbox:  {config.inbox_dir.resolve()}\n"
+        f"Output: {config.output_dir.resolve()}\n"
+        f"URL:    http://{args.host}:{args.port}",
+        border_style="blue",
+    ))
+    run_server(config, host=args.host, port=args.port)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the CLI."""
     parser = _build_parser()
@@ -285,7 +329,9 @@ def main(argv: list[str] | None = None) -> int:
         drive_token_path=Path(args.drive_token),
     )
 
-    if config.use_drive:
+    if args.gui:
+        return _run_gui(args, config)
+    elif config.use_drive:
         return _run_drive(args, config)
     else:
         return _run_local(args, config)

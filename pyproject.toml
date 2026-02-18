@@ -18,6 +18,12 @@ drive = [
     "google-auth-httplib2>=0.1.0",
     "google-auth-oauthlib>=1.1.0",
 ]
+gui = [
+    "flask>=3.0.0",
+]
+all = [
+    "document-sorter[drive,gui]",
+]
 
 [project.scripts]
 docsort = "document_sorter.cli:main"

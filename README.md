@@ -14,6 +14,7 @@ AI-powered household document sorter and classifier. Drop your scanned documents
 - **Batch processing** — processes an entire inbox folder in one run
 - **Dry run mode** — classify everything without moving any files
 - **Google Drive integration** — scan to Drive, sort directly in Drive, no local storage needed
+- **Web GUI** — browser-based interface with document thumbnails, click-to-classify, and manual review
 - **Sorting reports** — text or JSON report of every decision made
 
 ## Quick Start
@@ -28,6 +29,18 @@ For Google Drive support:
 
 ```bash
 pip install -e '.[drive]'
+```
+
+For the web GUI:
+
+```bash
+pip install -e '.[gui]'
+```
+
+Or install everything:
+
+```bash
+pip install -e '.[all]'
 ```
 
 Requires Python 3.10+. For PDF support, you also need `poppler-utils`:
@@ -96,6 +109,11 @@ Google Drive:
   --drive-output NAME     Drive output folder name (default: 'Sorted Documents')
   --drive-credentials F   Path to OAuth credentials JSON (default: credentials.json)
   --drive-token F         Path to saved OAuth token (default: token.json)
+
+Web GUI:
+  --gui                   Launch the web GUI in your browser
+  --port PORT             Port for the web GUI (default: 5000)
+  --host HOST             Host for the web GUI (default: 127.0.0.1)
 ```
 
 ## Examples
@@ -144,6 +162,35 @@ docsort --drive --drive-inbox "Scanned Docs" --drive-output "Filed" --move
 ```bash
 docsort --drive --dry-run
 ```
+
+**Launch the web GUI:**
+```bash
+docsort --gui
+```
+
+**GUI with custom inbox and port:**
+```bash
+docsort ~/scans --gui --port 8080
+```
+
+## Web GUI
+
+The web GUI gives you a visual interface for sorting documents — no terminal needed after launching.
+
+```bash
+docsort --gui
+```
+
+Then open http://127.0.0.1:5000 in your browser. The GUI provides:
+
+- **Thumbnail grid** — see all your inbox documents at a glance
+- **Click to preview** — select a document and see its thumbnail in the sidebar
+- **Preview Classification** — classify a single document before committing
+- **Sort All** — batch sort with a progress bar, same as the CLI
+- **Manual assignment** — drag uncertain documents to the right category yourself
+- **Create categories** — add new folders from the sidebar
+- **Adjustable settings** — change threshold and generality from the toolbar
+- **Results table** — see what was classified where after a batch run
 
 ## Google Drive Setup
 
@@ -226,5 +273,9 @@ document_sorter/
 ├── drive.py          # Google Drive API integration (OAuth, upload, move)
 ├── folders.py        # Local folder management, file placement, duplicate detection
 ├── processor.py      # Batch orchestration (local + Drive)
-└── report.py         # Text and JSON report generation
+├── report.py         # Text and JSON report generation
+├── thumbnails.py     # Thumbnail generation for document previews
+├── web.py            # Flask web GUI application
+└── templates/
+    └── index.html    # Web GUI HTML template
 ```
