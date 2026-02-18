@@ -1,0 +1,23 @@
+[project]
+name = "document-sorter"
+version = "0.1.0"
+description = "AI-powered household document sorter and classifier using Claude's vision API"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.39.0",
+    "pdf2image>=1.17.0",
+    "Pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+docsort = "document_sorter.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+include = ["document_sorter*"]
