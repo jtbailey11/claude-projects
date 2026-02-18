@@ -13,7 +13,7 @@ from rich.table import Table
 
 from .config import Generality, SorterConfig
 from .processor import BatchReport, discover_files, process_batch
-from .report import generate_text_report, save_report
+from .report import save_report
 
 
 console = Console()
@@ -84,6 +84,34 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Don't create default seed category folders",
     )
+
+    # Google Drive options
+    drive_group = p.add_argument_group("Google Drive")
+    drive_group.add_argument(
+        "--drive",
+        action="store_true",
+        help="Use Google Drive instead of local folders",
+    )
+    drive_group.add_argument(
+        "--drive-inbox",
+        default="Unsorted Scans",
+        help="Name of the inbox folder in Google Drive (default: 'Unsorted Scans')",
+    )
+    drive_group.add_argument(
+        "--drive-output",
+        default="Sorted Documents",
+        help="Name of the output folder in Google Drive (default: 'Sorted Documents')",
+    )
+    drive_group.add_argument(
+        "--drive-credentials",
+        default="credentials.json",
+        help="Path to Google OAuth credentials JSON (default: credentials.json)",
+    )
+    drive_group.add_argument(
+        "--drive-token",
+        default="token.json",
+        help="Path to saved Google OAuth token (default: token.json)",
+    )
     return p
 
 
@@ -114,6 +142,126 @@ def _print_summary(report: BatchReport) -> None:
             console.print(f"  {path.name}: {err}")
 
 
+def _run_local(args: argparse.Namespace, config: SorterConfig) -> int:
+    """Run the sorter against local folders."""
+    # Validate inbox
+    if not config.inbox_dir.exists():
+        console.print(
+            f"[red]Inbox folder not found:[/red] {config.inbox_dir.resolve()}\n"
+            f"Create it and add your scanned documents, then run again."
+        )
+        return 1
+
+    files = discover_files(config.inbox_dir, config)
+    if not files:
+        console.print(
+            f"[yellow]No supported documents found in:[/yellow] {config.inbox_dir.resolve()}\n"
+            f"Supported types: {', '.join(config.supported_extensions)}"
+        )
+        return 0
+
+    mode = "[bold yellow]DRY RUN[/bold yellow] " if config.dry_run else ""
+    action = "Moving" if config.move_files else "Copying"
+    console.print(Panel(
+        f"{mode}[bold]Document Sorter[/bold]\n"
+        f"Inbox:       {config.inbox_dir.resolve()}\n"
+        f"Output:      {config.output_dir.resolve()}\n"
+        f"Files found: {len(files)}\n"
+        f"Threshold:   {config.confidence_threshold:.0%}\n"
+        f"Generality:  {config.generality.value}\n"
+        f"Action:      {action}",
+        border_style="blue",
+    ))
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Sorting documents...", total=len(files))
+
+        def on_progress(idx: int, total: int, file_path: Path, status: str) -> None:
+            progress.update(task, advance=1, description=f"[cyan]{file_path.name}[/cyan] {status}")
+
+        report = process_batch(config, progress_callback=on_progress)
+
+    _print_summary(report)
+
+    if args.report != "none":
+        report_path = save_report(report, config.output_dir, fmt=args.report)
+        console.print(f"\n[dim]Report saved to: {report_path}[/dim]")
+
+    return 0 if not report.errors else 1
+
+
+def _run_drive(args: argparse.Namespace, config: SorterConfig) -> int:
+    """Run the sorter against Google Drive."""
+    try:
+        from .drive import check_drive_available
+        check_drive_available()
+    except ImportError as e:
+        console.print(f"[red]{e}[/red]")
+        return 1
+
+    from .processor import process_batch_drive
+
+    mode = "[bold yellow]DRY RUN[/bold yellow] " if config.dry_run else ""
+    action = "Moving" if config.move_files else "Copying"
+    console.print(Panel(
+        f"{mode}[bold]Document Sorter[/bold] [blue](Google Drive)[/blue]\n"
+        f"Drive inbox:  {config.drive_inbox_folder}\n"
+        f"Drive output: {config.drive_output_folder}\n"
+        f"Threshold:    {config.confidence_threshold:.0%}\n"
+        f"Generality:   {config.generality.value}\n"
+        f"Action:       {action}",
+        border_style="blue",
+    ))
+
+    console.print("[dim]Authenticating with Google Drive...[/dim]")
+
+    # We don't know file count until we query Drive, so start indeterminate
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Connecting to Drive...", total=None)
+        started = False
+
+        def on_progress(idx: int, total: int, file_path: Path, status: str) -> None:
+            nonlocal started
+            if not started:
+                progress.update(task, total=total)
+                started = True
+            progress.update(task, advance=1, description=f"[cyan]{file_path.name}[/cyan] {status}")
+
+        report = process_batch_drive(config, progress_callback=on_progress)
+
+    if report.total_files == 0:
+        console.print(
+            f"[yellow]No supported documents found in Drive folder:[/yellow] "
+            f"{config.drive_inbox_folder}\n"
+            f"Supported types: {', '.join(config.supported_extensions)}"
+        )
+        return 0
+
+    _print_summary(report)
+
+    # Save report locally (Drive reports always go local)
+    if args.report != "none":
+        report_dir = Path(".")
+        report_path = save_report(report, report_dir, fmt=args.report)
+        console.print(f"\n[dim]Report saved to: {report_path}[/dim]")
+
+    return 0 if not report.errors else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the CLI."""
     parser = _build_parser()
@@ -130,64 +278,17 @@ def main(argv: list[str] | None = None) -> int:
         max_new_categories=args.max_new_categories,
         model=args.model,
         seed_categories=[] if args.no_seed else SorterConfig.seed_categories,
+        use_drive=args.drive,
+        drive_inbox_folder=args.drive_inbox,
+        drive_output_folder=args.drive_output,
+        drive_credentials_path=Path(args.drive_credentials),
+        drive_token_path=Path(args.drive_token),
     )
 
-    # Validate inbox
-    if not config.inbox_dir.exists():
-        console.print(
-            f"[red]Inbox folder not found:[/red] {config.inbox_dir.resolve()}\n"
-            f"Create it and add your scanned documents, then run again."
-        )
-        return 1
-
-    # Discover files first
-    files = discover_files(config.inbox_dir, config)
-    if not files:
-        console.print(
-            f"[yellow]No supported documents found in:[/yellow] {config.inbox_dir.resolve()}\n"
-            f"Supported types: {', '.join(config.supported_extensions)}"
-        )
-        return 0
-
-    # Header
-    mode = "[bold yellow]DRY RUN[/bold yellow] " if config.dry_run else ""
-    action = "Moving" if config.move_files else "Copying"
-    console.print(Panel(
-        f"{mode}[bold]Document Sorter[/bold]\n"
-        f"Inbox:       {config.inbox_dir.resolve()}\n"
-        f"Output:      {config.output_dir.resolve()}\n"
-        f"Files found: {len(files)}\n"
-        f"Threshold:   {config.confidence_threshold:.0%}\n"
-        f"Generality:  {config.generality.value}\n"
-        f"Action:      {action}",
-        border_style="blue",
-    ))
-
-    # Process with progress bar
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Sorting documents...", total=len(files))
-
-        def on_progress(idx: int, total: int, file_path: Path, status: str) -> None:
-            progress.update(task, advance=1, description=f"[cyan]{file_path.name}[/cyan] {status}")
-
-        report = process_batch(config, progress_callback=on_progress)
-
-    # Print summary
-    _print_summary(report)
-
-    # Save report
-    if args.report != "none":
-        report_path = save_report(report, config.output_dir, fmt=args.report)
-        console.print(f"\n[dim]Report saved to: {report_path}[/dim]")
-
-    return 0 if not report.errors else 1
+    if config.use_drive:
+        return _run_drive(args, config)
+    else:
+        return _run_local(args, config)
 
 
 if __name__ == "__main__":

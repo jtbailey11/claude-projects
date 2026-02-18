@@ -65,6 +65,13 @@ class SorterConfig:
     # Duplicate detection
     detect_duplicates: bool = True
 
+    # Google Drive settings
+    use_drive: bool = False
+    drive_inbox_folder: str = "Unsorted Scans"
+    drive_output_folder: str = "Sorted Documents"
+    drive_credentials_path: Path = Path("credentials.json")
+    drive_token_path: Path = Path("token.json")
+
     # Default household categories to seed the folder structure
     seed_categories: list[str] = field(default_factory=lambda: [
         "Financial",

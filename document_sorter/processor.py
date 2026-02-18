@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -170,6 +172,191 @@ def process_batch(
 
         if progress_callback:
             progress_callback(idx + 1, len(files), file_path, status)
+
+    report.elapsed_seconds = time.time() - start_time
+    return report
+
+
+def discover_drive_files(service: object, folder_id: str, config: SorterConfig) -> list[dict]:
+    """List supported document files in a Drive folder."""
+    from .drive import list_files_in_folder
+    return list_files_in_folder(service, folder_id, config.supported_extensions)
+
+
+def process_batch_drive(
+    config: SorterConfig,
+    progress_callback: callable | None = None,
+) -> BatchReport:
+    """Process all documents in a Google Drive inbox folder.
+
+    Downloads each file to a temp dir for classification, then moves/copies
+    the original Drive file into the correct category folder in Drive.
+
+    Args:
+        config: Sorter configuration (use_drive must be True).
+        progress_callback: Optional callable(current_index, total, file_path, status_msg).
+
+    Returns:
+        A BatchReport summarising everything that happened.
+    """
+    from .drive import (
+        authenticate,
+        check_duplicate_by_hash,
+        download_to_temp,
+        ensure_folder_path,
+        find_or_create_folder,
+        get_file_md5,
+        list_subfolders,
+        move_file,
+        rename_file,
+        upload_file,
+    )
+
+    report = BatchReport()
+    start_time = time.time()
+    tmp_dirs: list[Path] = []
+
+    try:
+        # Authenticate
+        service = authenticate(config.drive_credentials_path, config.drive_token_path)
+
+        # Find or create inbox and output folders in Drive
+        inbox_id = find_or_create_folder(service, config.drive_inbox_folder)
+        output_id = find_or_create_folder(service, config.drive_output_folder)
+
+        # Discover files in Drive inbox
+        drive_files = discover_drive_files(service, inbox_id, config)
+        report.total_files = len(drive_files)
+
+        if not drive_files:
+            report.elapsed_seconds = time.time() - start_time
+            return report
+
+        # Load existing category folders from Drive output
+        existing_folders = list_subfolders(service, output_id)
+        existing_categories = sorted(f["name"] for f in existing_folders)
+        # Map category name → Drive folder ID
+        cat_id_map: dict[str, str] = {f["name"]: f["id"] for f in existing_folders}
+
+        # Seed default categories if output folder is empty
+        if not existing_categories and config.seed_categories:
+            for cat in config.seed_categories:
+                if not config.dry_run:
+                    cat_id = find_or_create_folder(service, cat, output_id)
+                    cat_id_map[cat] = cat_id
+            existing_categories = sorted(cat_id_map.keys())
+
+        new_category_count = 0
+        client = anthropic.Anthropic()
+
+        for idx, drive_file in enumerate(drive_files):
+            file_name = drive_file["name"]
+            file_id = drive_file["id"]
+            status = ""
+
+            try:
+                # Download to temp for classification
+                local_path = download_to_temp(service, file_id, file_name)
+                tmp_dirs.append(local_path.parent)
+
+                # Classify using the local copy
+                classification = classify_document(
+                    local_path, config, existing_categories, client=client,
+                )
+
+                routed_to_unidentified = False
+                dest_category = classification.category
+
+                if classification.confidence < config.confidence_threshold:
+                    dest_category = config.unidentified_dir_name
+                    routed_to_unidentified = True
+                    status = f"Low confidence ({classification.confidence:.0%}) → Unidentified"
+                elif classification.is_new_category:
+                    if new_category_count >= config.max_new_categories:
+                        dest_category = config.unidentified_dir_name
+                        routed_to_unidentified = True
+                        status = "New category limit reached → Unidentified"
+                    else:
+                        existing_categories.append(dest_category)
+                        report.new_categories_created.append(dest_category)
+                        new_category_count += 1
+                        status = f"New category: {dest_category}"
+                else:
+                    status = f"→ {dest_category} ({classification.confidence:.0%})"
+
+                # Resolve the destination folder in Drive
+                if dest_category not in cat_id_map:
+                    if not config.dry_run:
+                        cat_id_map[dest_category] = ensure_folder_path(
+                            service, dest_category, output_id,
+                        )
+                    else:
+                        cat_id_map[dest_category] = "dry-run"
+
+                dest_folder_id = cat_id_map[dest_category]
+
+                # Check for duplicates via MD5
+                was_duplicate = False
+                if config.detect_duplicates and not config.dry_run:
+                    src_md5 = get_file_md5(service, file_id)
+                    if src_md5:
+                        dup = check_duplicate_by_hash(service, dest_folder_id, src_md5)
+                        if dup:
+                            was_duplicate = True
+
+                # Build the destination filename
+                if classification.suggested_filename:
+                    clean = "".join(
+                        c for c in classification.suggested_filename
+                        if c not in r'\/:*?"<>|'
+                    ).strip()
+                    ext = Path(file_name).suffix
+                    new_name = f"{clean}{ext}" if clean else file_name
+                else:
+                    new_name = file_name
+
+                if was_duplicate:
+                    stem = Path(new_name).stem
+                    ext = Path(new_name).suffix
+                    new_name = f"{stem} (DUPLICATE){ext}"
+
+                # Move or copy the file in Drive
+                dest_display = Path(config.drive_output_folder) / dest_category / new_name
+
+                if not config.dry_run:
+                    if config.move_files:
+                        move_file(service, file_id, dest_folder_id)
+                        rename_file(service, file_id, new_name)
+                    else:
+                        upload_file(service, local_path, dest_folder_id, name=new_name)
+
+                result = SortResult(
+                    classification=classification,
+                    destination=dest_display,
+                    was_duplicate=was_duplicate,
+                    routed_to_unidentified=routed_to_unidentified,
+                )
+                report.results.append(result)
+
+                if routed_to_unidentified:
+                    report.unidentified_count += 1
+                else:
+                    report.sorted_count += 1
+
+                if was_duplicate:
+                    report.duplicate_count += 1
+
+            except Exception as e:
+                report.errors.append((Path(file_name), str(e)))
+                status = f"ERROR: {e}"
+
+            if progress_callback:
+                progress_callback(idx + 1, len(drive_files), Path(file_name), status)
+
+    finally:
+        # Clean up temp directories
+        for tmp_dir in tmp_dirs:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     report.elapsed_seconds = time.time() - start_time
     return report
