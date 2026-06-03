@@ -8,9 +8,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import anthropic
-
-from .classifier import Classification, classify_document
+from .classifier import Classification, classify_document, create_client
 from .config import SorterConfig
 from .folders import (
     ensure_category_folder,
@@ -103,7 +101,7 @@ def process_batch(
     new_category_count = 0
 
     # Initialise API client once for the whole batch
-    client = anthropic.Anthropic()
+    client = create_client(config)
 
     for idx, file_path in enumerate(files):
         status = ""
@@ -247,7 +245,7 @@ def process_batch_drive(
             existing_categories = sorted(cat_id_map.keys())
 
         new_category_count = 0
-        client = anthropic.Anthropic()
+        client = create_client(config)
 
         for idx, drive_file in enumerate(drive_files):
             file_name = drive_file["name"]

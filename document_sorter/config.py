@@ -18,6 +18,21 @@ class Generality(Enum):
     SPECIFIC = "specific"
 
 
+class Provider(Enum):
+    """AI provider for document classification."""
+
+    OLLAMA = "ollama"
+    GEMINI = "gemini"
+    CLAUDE = "claude"
+
+
+PROVIDER_DEFAULT_MODELS = {
+    Provider.OLLAMA: "gemma4:e4b",
+    Provider.GEMINI: "gemini-2.0-flash",
+    Provider.CLAUDE: "claude-sonnet-4-5-20250929",
+}
+
+
 # Descriptions sent to the classifier so it understands the desired granularity
 GENERALITY_PROMPTS = {
     Generality.BROAD: (
@@ -50,7 +65,9 @@ class SorterConfig:
     # Classification
     confidence_threshold: float = 0.70
     generality: Generality = Generality.MODERATE
-    model: str = "claude-sonnet-4-5-20250929"
+    provider: Provider = Provider.OLLAMA
+    model: str = ""  # empty = use provider default
+    ollama_host: str = "http://localhost:11434"
 
     # Behaviour
     move_files: bool = False  # False = copy, True = move originals
@@ -85,3 +102,10 @@ class SorterConfig:
         "Personal",
         "Correspondence",
     ])
+
+    @property
+    def resolved_model(self) -> str:
+        """Return the model name, falling back to provider default if not set."""
+        if self.model:
+            return self.model
+        return PROVIDER_DEFAULT_MODELS[self.provider]

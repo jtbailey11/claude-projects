@@ -318,6 +318,11 @@
                     <option value="moderate" {{ 'selected' if config.generality.value == 'moderate' }}>Moderate</option>
                     <option value="specific" {{ 'selected' if config.generality.value == 'specific' }}>Specific</option>
                 </select>
+                <select id="providerSelect">
+                    <option value="ollama" {{ 'selected' if config.provider.value == 'ollama' }}>Ollama (local)</option>
+                    <option value="gemini" {{ 'selected' if config.provider.value == 'gemini' }}>Gemini (free)</option>
+                    <option value="claude" {{ 'selected' if config.provider.value == 'claude' }}>Claude (paid)</option>
+                </select>
             </div>
 
             <!-- Tabs -->
@@ -475,6 +480,14 @@
             btn.textContent = 'Classifying...';
 
             try {
+                // Ensure provider setting is current before classifying
+                const provider = document.getElementById('providerSelect').value;
+                await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider }),
+                });
+
                 const res = await fetch('/api/classify/' + encodeURIComponent(selectedFile), { method: 'POST' });
                 const data = await res.json();
                 lastClassification = data;
@@ -531,6 +544,14 @@
         async function startSort() {
             const threshold = document.getElementById('thresholdSlider').value / 100;
             const generality = document.getElementById('generalitySelect').value;
+            const provider = document.getElementById('providerSelect').value;
+
+            // Update provider setting before starting sort
+            await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider }),
+            });
 
             const res = await fetch('/api/sort', {
                 method: 'POST',

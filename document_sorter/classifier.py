@@ -1,4 +1,4 @@
-"""Document classifier using Claude's vision API."""
+"""Document classifier — supports Claude, Gemini, and Ollama (Gemma) providers."""
 
 from __future__ import annotations
 
@@ -8,9 +8,7 @@ import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
 
-import anthropic
-
-from .config import GENERALITY_PROMPTS, SorterConfig
+from .config import GENERALITY_PROMPTS, Provider, SorterConfig
 
 
 @dataclass
@@ -27,6 +25,10 @@ class Classification:
     reasoning: str  # brief explanation of why this category was chosen
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
 def _encode_image(path: Path) -> tuple[str, str]:
     """Return (base64_data, media_type) for an image file."""
     mime, _ = mimetypes.guess_type(str(path))
@@ -37,25 +39,20 @@ def _encode_image(path: Path) -> tuple[str, str]:
 
 
 def _pdf_first_pages_as_images(path: Path, max_pages: int = 3) -> list[tuple[str, str]]:
-    """Convert the first N pages of a PDF to base64-encoded PNG images.
-
-    Returns a list of (base64_data, media_type) tuples.
-    Falls back to sending the raw PDF bytes if pdf2image is unavailable.
-    """
+    """Convert the first N pages of a PDF to base64-encoded PNG images."""
     try:
         from pdf2image import convert_from_path
+        import io
 
         images = convert_from_path(str(path), first_page=1, last_page=max_pages, dpi=200)
         results: list[tuple[str, str]] = []
         for img in images:
-            import io
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             b64 = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
             results.append((b64, "image/png"))
         return results
     except Exception:
-        # Fallback: send the raw PDF as base64 (Claude can handle PDFs directly)
         data = base64.standard_b64encode(path.read_bytes()).decode("utf-8")
         return [(data, "application/pdf")]
 
@@ -95,30 +92,49 @@ Respond with ONLY a JSON object (no markdown fences) in this exact structure:
 }}"""
 
 
-def classify_document(
+def _parse_response(raw_text: str) -> dict:
+    """Parse JSON from a model response, stripping markdown fences if present."""
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+        if text.endswith("```"):
+            text = text[: text.rfind("```")]
+        text = text.strip()
+    return json.loads(text)
+
+
+def _to_classification(file_path: Path, data: dict) -> Classification:
+    """Convert parsed JSON dict to a Classification dataclass."""
+    return Classification(
+        file_path=file_path,
+        category=data["category"],
+        confidence=float(data["confidence"]),
+        summary=data.get("summary", ""),
+        date_detected=data.get("date_detected"),
+        suggested_filename=data.get("suggested_filename"),
+        is_new_category=data.get("is_new_category", False),
+        reasoning=data.get("reasoning", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Provider: Claude (Anthropic)
+# ---------------------------------------------------------------------------
+
+def _classify_claude(
     file_path: Path,
     config: SorterConfig,
     existing_categories: list[str],
-    client: anthropic.Anthropic | None = None,
+    client: object | None = None,
 ) -> Classification:
-    """Classify a single document file using Claude's vision capabilities.
+    import anthropic
 
-    Args:
-        file_path: Path to the document (PDF or image).
-        config: Sorter configuration.
-        existing_categories: Currently existing category folder names.
-        client: Optional pre-initialized Anthropic client.
-
-    Returns:
-        A Classification result.
-    """
     if client is None:
         client = anthropic.Anthropic()
 
-    # Build content blocks with the document image(s)
     content: list[dict] = []
-
     suffix = file_path.suffix.lower()
+
     if suffix == ".pdf":
         pages = _pdf_first_pages_as_images(file_path)
         for b64_data, media_type in pages:
@@ -145,32 +161,170 @@ def classify_document(
     })
 
     system_prompt = _build_system_prompt(config, existing_categories)
-
     response = client.messages.create(
-        model=config.model,
+        model=config.resolved_model,
         max_tokens=1024,
         system=system_prompt,
         messages=[{"role": "user", "content": content}],
     )
 
-    raw_text = response.content[0].text.strip()
+    data = _parse_response(response.content[0].text)
+    return _to_classification(file_path, data)
 
-    # Parse the JSON response, stripping markdown fences if present
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("\n", 1)[1]
-        if raw_text.endswith("```"):
-            raw_text = raw_text[: raw_text.rfind("```")]
-        raw_text = raw_text.strip()
 
-    data = json.loads(raw_text)
+# ---------------------------------------------------------------------------
+# Provider: Gemini (Google)
+# ---------------------------------------------------------------------------
 
-    return Classification(
-        file_path=file_path,
-        category=data["category"],
-        confidence=float(data["confidence"]),
-        summary=data.get("summary", ""),
-        date_detected=data.get("date_detected"),
-        suggested_filename=data.get("suggested_filename"),
-        is_new_category=data.get("is_new_category", False),
-        reasoning=data.get("reasoning", ""),
+def _classify_gemini(
+    file_path: Path,
+    config: SorterConfig,
+    existing_categories: list[str],
+    client: object | None = None,
+) -> Classification:
+    from google import genai
+    from google.genai import types
+
+    if client is None:
+        client = genai.Client()
+
+    system_prompt = _build_system_prompt(config, existing_categories)
+
+    # Build parts: images first, then text
+    parts: list = []
+    suffix = file_path.suffix.lower()
+
+    if suffix == ".pdf":
+        pages = _pdf_first_pages_as_images(file_path)
+        for b64_data, media_type in pages:
+            parts.append(types.Part.from_bytes(
+                data=base64.standard_b64decode(b64_data),
+                mime_type=media_type,
+            ))
+    else:
+        mime, _ = mimetypes.guess_type(str(file_path))
+        parts.append(types.Part.from_bytes(
+            data=file_path.read_bytes(),
+            mime_type=mime or "application/octet-stream",
+        ))
+
+    parts.append(f"Please classify this scanned household document. Filename: {file_path.name}")
+
+    response = client.models.generate_content(
+        model=config.resolved_model,
+        contents=parts,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            max_output_tokens=1024,
+        ),
     )
+
+    data = _parse_response(response.text)
+    return _to_classification(file_path, data)
+
+
+# ---------------------------------------------------------------------------
+# Provider: Ollama (local — Gemma, Llama, etc.)
+# ---------------------------------------------------------------------------
+
+def _classify_ollama(
+    file_path: Path,
+    config: SorterConfig,
+    existing_categories: list[str],
+    client: object | None = None,
+) -> Classification:
+    from openai import OpenAI
+
+    if client is None:
+        client = OpenAI(
+            base_url=f"{config.ollama_host}/v1",
+            api_key="ollama",
+        )
+
+    system_prompt = _build_system_prompt(config, existing_categories)
+
+    # Build message content with images
+    user_content: list[dict] = []
+    suffix = file_path.suffix.lower()
+
+    if suffix == ".pdf":
+        pages = _pdf_first_pages_as_images(file_path)
+        for b64_data, media_type in pages:
+            if media_type == "application/pdf":
+                # Ollama doesn't support raw PDFs — skip (pdf2image should handle this)
+                continue
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{b64_data}"},
+            })
+    else:
+        b64_data, media_type = _encode_image(file_path)
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{b64_data}"},
+        })
+
+    user_content.append({
+        "type": "text",
+        "text": f"Please classify this scanned household document. Filename: {file_path.name}",
+    })
+
+    response = client.chat.completions.create(
+        model=config.resolved_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        max_tokens=1024,
+    )
+
+    data = _parse_response(response.choices[0].message.content)
+    return _to_classification(file_path, data)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+_PROVIDERS = {
+    Provider.CLAUDE: _classify_claude,
+    Provider.GEMINI: _classify_gemini,
+    Provider.OLLAMA: _classify_ollama,
+}
+
+
+def create_client(config: SorterConfig) -> object:
+    """Create a reusable API client for the configured provider."""
+    if config.provider == Provider.CLAUDE:
+        import anthropic
+        return anthropic.Anthropic()
+    elif config.provider == Provider.GEMINI:
+        from google import genai
+        return genai.Client()
+    elif config.provider == Provider.OLLAMA:
+        from openai import OpenAI
+        return OpenAI(
+            base_url=f"{config.ollama_host}/v1",
+            api_key="ollama",
+        )
+
+
+def classify_document(
+    file_path: Path,
+    config: SorterConfig,
+    existing_categories: list[str],
+    client: object | None = None,
+) -> Classification:
+    """Classify a single document using the configured provider.
+
+    Args:
+        file_path: Path to the document (PDF or image).
+        config: Sorter configuration.
+        existing_categories: Currently existing category folder names.
+        client: Optional pre-initialized client (from create_client).
+
+    Returns:
+        A Classification result.
+    """
+    classify_fn = _PROVIDERS[config.provider]
+    return classify_fn(file_path, config, existing_categories, client)

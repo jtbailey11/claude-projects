@@ -1,11 +1,10 @@
 [project]
 name = "document-sorter"
-version = "0.1.0"
-description = "AI-powered household document sorter and classifier using Claude's vision API"
+version = "0.2.0"
+description = "AI-powered household document sorter and classifier"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "anthropic>=0.39.0",
     "pdf2image>=1.17.0",
     "Pillow>=10.0.0",
     "python-dotenv>=1.0.0",
@@ -13,6 +12,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ollama = [
+    "openai>=1.0.0",
+]
+gemini = [
+    "google-genai>=1.0.0",
+]
+claude = [
+    "anthropic>=0.39.0",
+]
 drive = [
     "google-api-python-client>=2.100.0",
     "google-auth-httplib2>=0.1.0",
@@ -22,7 +30,7 @@ gui = [
     "flask>=3.0.0",
 ]
 all = [
-    "document-sorter[drive,gui]",
+    "document-sorter[ollama,gemini,claude,drive,gui]",
 ]
 
 [project.scripts]

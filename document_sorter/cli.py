@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from .config import Generality, SorterConfig
+from .config import Generality, Provider, SorterConfig
 from .processor import BatchReport, discover_files, process_batch
 from .report import save_report
 
@@ -69,9 +69,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max new category folders to create per batch (default: 5)",
     )
     p.add_argument(
+        "-p", "--provider",
+        choices=["ollama", "gemini", "claude"],
+        default="ollama",
+        help="AI provider: ollama (local, free), gemini (cloud, free tier), claude (cloud, paid). Default: ollama",
+    )
+    p.add_argument(
         "--model",
-        default="claude-sonnet-4-5-20250929",
-        help="Claude model to use for classification",
+        default="",
+        help="Model name override (default: auto per provider — gemma4:e4b / gemini-2.0-flash / claude-sonnet-4-5)",
+    )
+    p.add_argument(
+        "--ollama-host",
+        default="http://localhost:11434",
+        help="Ollama server URL (default: http://localhost:11434)",
     )
     p.add_argument(
         "--report",
@@ -186,6 +197,7 @@ def _run_local(args: argparse.Namespace, config: SorterConfig) -> int:
         f"Inbox:       {config.inbox_dir.resolve()}\n"
         f"Output:      {config.output_dir.resolve()}\n"
         f"Files found: {len(files)}\n"
+        f"Provider:    {config.provider.value} ({config.resolved_model})\n"
         f"Threshold:   {config.confidence_threshold:.0%}\n"
         f"Generality:  {config.generality.value}\n"
         f"Action:      {action}",
@@ -233,6 +245,7 @@ def _run_drive(args: argparse.Namespace, config: SorterConfig) -> int:
         f"{mode}[bold]Document Sorter[/bold] [blue](Google Drive)[/blue]\n"
         f"Drive inbox:  {config.drive_inbox_folder}\n"
         f"Drive output: {config.drive_output_folder}\n"
+        f"Provider:     {config.provider.value} ({config.resolved_model})\n"
         f"Threshold:    {config.confidence_threshold:.0%}\n"
         f"Generality:   {config.generality.value}\n"
         f"Action:       {action}",
@@ -316,11 +329,13 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=Path(args.output),
         confidence_threshold=args.threshold,
         generality=Generality(args.generality),
+        provider=Provider(args.provider),
+        model=args.model,
+        ollama_host=args.ollama_host,
         move_files=args.move,
         dry_run=args.dry_run,
         detect_duplicates=not args.no_duplicates,
         max_new_categories=args.max_new_categories,
-        model=args.model,
         seed_categories=[] if args.no_seed else SorterConfig.seed_categories,
         use_drive=args.drive,
         drive_inbox_folder=args.drive_inbox,

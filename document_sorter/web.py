@@ -9,8 +9,8 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-from .classifier import classify_document
-from .config import Generality, SorterConfig
+from .classifier import classify_document, create_client
+from .config import Generality, Provider, SorterConfig
 from .folders import (
     ensure_category_folder,
     ensure_unidentified_folder,
@@ -131,11 +131,13 @@ def create_app(config: SorterConfig | None = None) -> Flask:
             output_dir=cfg.output_dir,
             confidence_threshold=threshold,
             generality=Generality(generality),
+            provider=cfg.provider,
+            model=cfg.model,
+            ollama_host=cfg.ollama_host,
             move_files=move,
             dry_run=False,
             detect_duplicates=cfg.detect_duplicates,
             max_new_categories=cfg.max_new_categories,
-            model=cfg.model,
             seed_categories=cfg.seed_categories,
         )
 
@@ -172,8 +174,7 @@ def create_app(config: SorterConfig | None = None) -> Flask:
 
         categories = get_existing_categories(cfg.output_dir)
 
-        import anthropic
-        client = anthropic.Anthropic()
+        client = create_client(cfg)
         classification = classify_document(file_path, cfg, categories, client=client)
 
         return jsonify({
@@ -220,6 +221,7 @@ def create_app(config: SorterConfig | None = None) -> Flask:
                 "output_dir": str(cfg.output_dir),
                 "confidence_threshold": cfg.confidence_threshold,
                 "generality": cfg.generality.value,
+                "provider": cfg.provider.value,
                 "move_files": cfg.move_files,
                 "max_new_categories": cfg.max_new_categories,
                 "model": cfg.model,
@@ -230,6 +232,8 @@ def create_app(config: SorterConfig | None = None) -> Flask:
             cfg.confidence_threshold = float(data["confidence_threshold"])
         if "generality" in data:
             cfg.generality = Generality(data["generality"])
+        if "provider" in data:
+            cfg.provider = Provider(data["provider"])
         if "move_files" in data:
             cfg.move_files = bool(data["move_files"])
         if "max_new_categories" in data:
@@ -241,9 +245,7 @@ def create_app(config: SorterConfig | None = None) -> Flask:
 
 def _run_sort_job(app: Flask, config: SorterConfig) -> None:
     """Background sort job that updates app.config['JOB'] as it runs."""
-    import anthropic
-
-    from .classifier import classify_document
+    from .classifier import classify_document, create_client
     from .folders import ensure_category_folder, ensure_unidentified_folder, get_existing_categories, place_file
 
     job = app.config["JOB"]
@@ -264,7 +266,7 @@ def _run_sort_job(app: Flask, config: SorterConfig) -> None:
         existing_categories = get_existing_categories(config.output_dir)
 
     new_category_count = 0
-    client = anthropic.Anthropic()
+    client = create_client(config)
 
     for idx, file_path in enumerate(files):
         job["current_file"] = file_path.name
