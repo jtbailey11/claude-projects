@@ -69,6 +69,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max new category folders to create per batch (default: 5)",
     )
     p.add_argument(
+        "--refine",
+        action="store_true",
+        help="Pass 2: sort files WITHIN existing category folders into subfolders "
+             "(operates on the output folder; low-confidence files stay in place)",
+    )
+    p.add_argument(
+        "--refine-min-files",
+        type=int,
+        default=8,
+        help="Only refine category folders with at least this many loose files (default: 8)",
+    )
+    p.add_argument(
         "-p", "--provider",
         choices=["ollama", "gemini", "claude"],
         default="ollama",
@@ -154,6 +166,8 @@ def _print_summary(report: BatchReport) -> None:
     table.add_row("Total files", str(report.total_files))
     table.add_row("Sorted", f"[green]{report.sorted_count}[/green]")
     table.add_row("Unidentified", f"[yellow]{report.unidentified_count}[/yellow]")
+    if report.left_in_place_count:
+        table.add_row("Left in place", str(report.left_in_place_count))
     table.add_row("Duplicates", str(report.duplicate_count))
     table.add_row("Errors", f"[red]{len(report.errors)}[/red]" if report.errors else "0")
     table.add_row("Time", f"{report.elapsed_seconds:.1f}s")
@@ -294,6 +308,77 @@ def _run_drive(args: argparse.Namespace, config: SorterConfig) -> int:
     return 0 if not report.errors else 1
 
 
+def _run_refine(args: argparse.Namespace, config: SorterConfig) -> int:
+    """Run pass-2 refinement: sort within category folders into subfolders."""
+    location = (
+        f"Drive folder: {config.drive_output_folder}" if config.use_drive
+        else f"Sorted tree:  {config.output_dir.resolve()}"
+    )
+    mode = "[bold yellow]DRY RUN[/bold yellow] " if config.dry_run else ""
+    console.print(Panel(
+        f"{mode}[bold]Document Sorter — Refine (Pass 2)[/bold]\n"
+        f"{location}\n"
+        f"Provider:    {config.provider.value} ({config.resolved_model})\n"
+        f"Threshold:   {config.confidence_threshold:.0%} (below → file stays in place)\n"
+        f"Min files:   {config.refine_min_files} per folder to trigger refinement",
+        border_style="blue",
+    ))
+
+    if config.use_drive:
+        try:
+            from .drive import check_drive_available
+            check_drive_available()
+        except ImportError as e:
+            console.print(f"[red]{e}[/red]")
+            return 1
+        from .processor import process_refine_drive as refine_fn
+        console.print("[dim]Authenticating with Google Drive...[/dim]")
+    else:
+        if not config.output_dir.exists():
+            console.print(
+                f"[red]Sorted folder not found:[/red] {config.output_dir.resolve()}\n"
+                f"Run a normal sort first, then refine."
+            )
+            return 1
+        from .processor import process_refine as refine_fn
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Scanning category folders...", total=None)
+        started = False
+
+        def on_progress(idx: int, total: int, file_path: Path, status: str) -> None:
+            nonlocal started
+            if not started:
+                progress.update(task, total=total)
+                started = True
+            progress.update(task, advance=1, description=f"[cyan]{file_path.name}[/cyan] {status}")
+
+        report = refine_fn(config, progress_callback=on_progress)
+
+    if report.total_files == 0:
+        console.print(
+            f"[yellow]Nothing to refine.[/yellow] No category folder has "
+            f"{config.refine_min_files}+ loose files (adjust with --refine-min-files)."
+        )
+        return 0
+
+    _print_summary(report)
+
+    if args.report != "none":
+        report_dir = Path(".") if config.use_drive else config.output_dir
+        report_path = save_report(report, report_dir, fmt=args.report)
+        console.print(f"\n[dim]Report saved to: {report_path}[/dim]")
+
+    return 0 if not report.errors else 1
+
+
 def _run_gui(args: argparse.Namespace, config: SorterConfig) -> int:
     """Launch the web GUI."""
     try:
@@ -336,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         detect_duplicates=not args.no_duplicates,
         max_new_categories=args.max_new_categories,
+        refine_min_files=args.refine_min_files,
         seed_categories=[] if args.no_seed else SorterConfig.seed_categories,
         use_drive=args.drive,
         drive_inbox_folder=args.drive_inbox,
@@ -346,6 +432,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.gui:
         return _run_gui(args, config)
+    elif args.refine:
+        return _run_refine(args, config)
     elif config.use_drive:
         return _run_drive(args, config)
     else:

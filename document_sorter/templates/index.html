@@ -302,6 +302,10 @@
             <!-- Toolbar -->
             <div class="toolbar">
                 <button class="btn" onclick="startSort()" id="sortBtn">Sort All Documents</button>
+                <button class="btn btn-secondary" onclick="startRefine()" id="refineBtn"
+                        title="Pass 2: sort files within category folders into subfolders">
+                    Refine Subfolders
+                </button>
                 <button class="btn btn-secondary" onclick="classifySelected()" id="classifyBtn" disabled>
                     Preview Classification
                 </button>
@@ -434,7 +438,7 @@
     <!-- Progress overlay -->
     <div class="progress-overlay" id="progressOverlay">
         <div class="progress-box">
-            <h2>Sorting Documents...</h2>
+            <h2 id="progressTitle">Sorting Documents...</h2>
             <div class="progress-bar-outer">
                 <div class="progress-bar-inner" id="progressBar"></div>
             </div>
@@ -564,6 +568,34 @@
                 return;
             }
 
+            document.getElementById('progressTitle').textContent = 'Sorting Documents...';
+            document.getElementById('progressOverlay').classList.add('active');
+            pollProgress();
+        }
+
+        async function startRefine() {
+            const threshold = document.getElementById('thresholdSlider').value / 100;
+            const provider = document.getElementById('providerSelect').value;
+
+            // Update provider setting before starting the refine job
+            await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider }),
+            });
+
+            const res = await fetch('/api/refine', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ threshold }),
+            });
+            const data = await res.json();
+            if (data.error) {
+                alert(data.error);
+                return;
+            }
+
+            document.getElementById('progressTitle').textContent = 'Refining Subfolders...';
             document.getElementById('progressOverlay').classList.add('active');
             pollProgress();
         }
@@ -596,7 +628,16 @@
             document.querySelector('.tab[data-tab="results"]').classList.add('active');
             document.getElementById('tab-results').classList.add('active');
 
-            let html = '<h3 style="margin-bottom:12px;">Sorted ' + job.results.length + ' documents</h3>';
+            if (job.results.length === 0 && job.errors.length === 0) {
+                document.getElementById('resultsArea').innerHTML =
+                    '<div class="empty"><div class="icon">&#9745;</div>' +
+                    '<p>Nothing to process.</p>' +
+                    '<p style="font-size:13px;margin-top:8px;">No eligible documents were found ' +
+                    '(for refine: no category folder has enough loose files yet).</p></div>';
+                return;
+            }
+
+            let html = '<h3 style="margin-bottom:12px;">Processed ' + job.results.length + ' documents</h3>';
 
             if (job.errors.length > 0) {
                 html += '<div style="color:#dc2626;margin-bottom:12px;">' + job.errors.length + ' error(s)</div>';
@@ -609,7 +650,9 @@
             for (const r of job.results) {
                 const pct = Math.round(r.confidence * 100);
                 const color = pct >= 70 ? '#16a34a' : pct >= 50 ? '#eab308' : '#dc2626';
-                const tag = r.unidentified ? ' <span style="color:#eab308;">[Unidentified]</span>' : '';
+                let tag = '';
+                if (r.unidentified) tag = ' <span style="color:#eab308;">[Unidentified]</span>';
+                else if (r.left_in_place) tag = ' <span style="color:#6b7280;">[Left in place]</span>';
                 html += '<tr>';
                 html += '<td>' + r.filename + '</td>';
                 html += '<td>' + r.category + tag + '</td>';

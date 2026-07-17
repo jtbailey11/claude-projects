@@ -52,6 +52,8 @@ def find_duplicate(file_path: Path, dest_folder: Path) -> Path | None:
 
     Returns the path of the existing duplicate, or None.
     """
+    if not dest_folder.exists():
+        return None
     src_hash = _file_hash(file_path)
     for existing in dest_folder.iterdir():
         if existing.is_file() and _file_hash(existing) == src_hash:

@@ -20,6 +20,8 @@ def generate_text_report(report: BatchReport) -> str:
     lines.append(f"  Total files processed:  {report.total_files}")
     lines.append(f"  Successfully sorted:    {report.sorted_count}")
     lines.append(f"  Sent to Unidentified:   {report.unidentified_count}")
+    if report.left_in_place_count:
+        lines.append(f"  Left in place:          {report.left_in_place_count}")
     lines.append(f"  Duplicates detected:    {report.duplicate_count}")
     lines.append(f"  Errors:                 {len(report.errors)}")
     lines.append(f"  Time elapsed:           {report.elapsed_seconds:.1f}s")
@@ -41,6 +43,8 @@ def generate_text_report(report: BatchReport) -> str:
         flag = ""
         if result.routed_to_unidentified:
             flag = " [UNIDENTIFIED]"
+        if result.left_in_place:
+            flag += " [LEFT IN PLACE]"
         if result.was_duplicate:
             flag += " [DUPLICATE]"
 
@@ -75,6 +79,7 @@ def generate_json_report(report: BatchReport) -> str:
             "total_files": report.total_files,
             "sorted": report.sorted_count,
             "unidentified": report.unidentified_count,
+            "left_in_place": report.left_in_place_count,
             "duplicates": report.duplicate_count,
             "errors": len(report.errors),
             "elapsed_seconds": round(report.elapsed_seconds, 2),
@@ -92,6 +97,7 @@ def generate_json_report(report: BatchReport) -> str:
                 "is_new_category": r.classification.is_new_category,
                 "was_duplicate": r.was_duplicate,
                 "routed_to_unidentified": r.routed_to_unidentified,
+                "left_in_place": r.left_in_place,
                 "reasoning": r.classification.reasoning,
             }
             for r in report.results

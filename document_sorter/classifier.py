@@ -23,6 +23,7 @@ class Classification:
     suggested_filename: str | None  # a more descriptive filename
     is_new_category: bool  # True if the model proposed a category not in the existing list
     reasoning: str  # brief explanation of why this category was chosen
+    belongs_here: bool = True  # refine mode only: False = doesn't belong in the parent category
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +58,19 @@ def _pdf_first_pages_as_images(path: Path, max_pages: int = 3) -> list[tuple[str
         return [(data, "application/pdf")]
 
 
-def _build_system_prompt(config: SorterConfig, existing_categories: list[str]) -> str:
-    """Build the system prompt for the classifier."""
+def _build_system_prompt(
+    config: SorterConfig,
+    existing_categories: list[str],
+    parent_category: str | None = None,
+) -> str:
+    """Build the system prompt for the classifier.
+
+    When parent_category is given, builds the pass-2 refinement prompt instead:
+    existing_categories is then the list of subfolders within that parent.
+    """
+    if parent_category is not None:
+        return _build_refine_prompt(config, parent_category, existing_categories)
+
     generality_guidance = GENERALITY_PROMPTS[config.generality]
     cats_list = "\n".join(f"  - {c}" for c in existing_categories) if existing_categories else "  (none yet)"
 
@@ -92,6 +104,51 @@ Respond with ONLY a JSON object (no markdown fences) in this exact structure:
 }}"""
 
 
+def _build_refine_prompt(
+    config: SorterConfig,
+    parent_category: str,
+    existing_subfolders: list[str],
+) -> str:
+    """Build the pass-2 system prompt: choose a subfolder within an existing category."""
+    subs_list = (
+        "\n".join(f"  - {s}" for s in existing_subfolders)
+        if existing_subfolders else "  (none yet)"
+    )
+
+    return f"""\
+You are refining an already-sorted household document archive. This document has
+already been filed into the top-level category "{parent_category}". Your job is to
+choose ONE subfolder within "{parent_category}" for it.
+
+EXISTING SUBFOLDERS OF "{parent_category}":
+{subs_list}
+
+RULES:
+1. STRONGLY prefer an existing subfolder when one is a reasonable fit. Only propose
+   a new subfolder if nothing existing fits AND this document type will plausibly
+   recur (statements, bills, policies, records of the same kind).
+2. Subfolder names must be a single level — never include "/" in the name. Keep the
+   naming style consistent with the existing subfolders.
+3. If this document does NOT actually belong in "{parent_category}" at all, set
+   "belongs_here" to false and set "category" to your best guess of the correct
+   top-level category instead.
+4. Provide a confidence score from 0.0 to 1.0. If you are unsure which subfolder
+   fits, use a low confidence — the file will simply stay loose in
+   "{parent_category}", which is a perfectly fine outcome. Do not force a choice.
+
+Respond with ONLY a JSON object (no markdown fences) in this exact structure:
+{{
+  "category": "Subfolder Name",
+  "confidence": 0.85,
+  "summary": "One-line description of the document",
+  "date_detected": "YYYY-MM-DD or null",
+  "suggested_filename": null,
+  "is_new_category": false,
+  "belongs_here": true,
+  "reasoning": "Brief explanation of classification"
+}}"""
+
+
 def _parse_response(raw_text: str) -> dict:
     """Parse JSON from a model response, stripping markdown fences if present."""
     text = raw_text.strip()
@@ -114,6 +171,7 @@ def _to_classification(file_path: Path, data: dict) -> Classification:
         suggested_filename=data.get("suggested_filename"),
         is_new_category=data.get("is_new_category", False),
         reasoning=data.get("reasoning", ""),
+        belongs_here=bool(data.get("belongs_here", True)),
     )
 
 
@@ -126,6 +184,7 @@ def _classify_claude(
     config: SorterConfig,
     existing_categories: list[str],
     client: object | None = None,
+    parent_category: str | None = None,
 ) -> Classification:
     import anthropic
 
@@ -160,7 +219,7 @@ def _classify_claude(
         "text": f"Please classify this scanned household document. Filename: {file_path.name}",
     })
 
-    system_prompt = _build_system_prompt(config, existing_categories)
+    system_prompt = _build_system_prompt(config, existing_categories, parent_category)
     response = client.messages.create(
         model=config.resolved_model,
         max_tokens=1024,
@@ -181,6 +240,7 @@ def _classify_gemini(
     config: SorterConfig,
     existing_categories: list[str],
     client: object | None = None,
+    parent_category: str | None = None,
 ) -> Classification:
     from google import genai
     from google.genai import types
@@ -188,7 +248,7 @@ def _classify_gemini(
     if client is None:
         client = genai.Client()
 
-    system_prompt = _build_system_prompt(config, existing_categories)
+    system_prompt = _build_system_prompt(config, existing_categories, parent_category)
 
     # Build parts: images first, then text
     parts: list = []
@@ -232,6 +292,7 @@ def _classify_ollama(
     config: SorterConfig,
     existing_categories: list[str],
     client: object | None = None,
+    parent_category: str | None = None,
 ) -> Classification:
     from openai import OpenAI
 
@@ -241,7 +302,7 @@ def _classify_ollama(
             api_key="ollama",
         )
 
-    system_prompt = _build_system_prompt(config, existing_categories)
+    system_prompt = _build_system_prompt(config, existing_categories, parent_category)
 
     # Build message content with images
     user_content: list[dict] = []
@@ -314,17 +375,22 @@ def classify_document(
     config: SorterConfig,
     existing_categories: list[str],
     client: object | None = None,
+    parent_category: str | None = None,
 ) -> Classification:
     """Classify a single document using the configured provider.
 
     Args:
         file_path: Path to the document (PDF or image).
         config: Sorter configuration.
-        existing_categories: Currently existing category folder names.
+        existing_categories: Currently existing category folder names. In refine
+            mode (parent_category given), this is the list of subfolders within
+            the parent category instead.
         client: Optional pre-initialized client (from create_client).
+        parent_category: If given, run in pass-2 refine mode: choose a subfolder
+            within this top-level category (with a "doesn't belong here" escape hatch).
 
     Returns:
         A Classification result.
     """
     classify_fn = _PROVIDERS[config.provider]
-    return classify_fn(file_path, config, existing_categories, client)
+    return classify_fn(file_path, config, existing_categories, client, parent_category)

@@ -74,6 +74,9 @@ class SorterConfig:
     dry_run: bool = False
     max_new_categories: int = 5  # limit on new folders created per batch
 
+    # Two-pass refinement (pass 2: sort within category folders into subfolders)
+    refine_min_files: int = 8  # only refine category folders with at least this many loose files
+
     # File types to process
     supported_extensions: tuple[str, ...] = (
         ".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp",
